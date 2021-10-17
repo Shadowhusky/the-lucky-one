@@ -6,6 +6,10 @@ import { useState, useLayoutEffect, useRef, useMemo, useEffect } from "react";
 import { SettingOutlined, ReloadOutlined } from "@ant-design/icons";
 import { Switch, Input, InputNumber, Button, message } from "antd";
 import "antd/dist/antd.css";
+import useSound from "use-sound";
+import throttle from "lodash/throttle";
+
+import flipSfx from "../../assets/flip.wav";
 
 let draw_list = [];
 
@@ -19,14 +23,14 @@ const isOverlap = (souceNode, targetNode) => {
   return souceRect.left < targetRect.left && souceRect.right > targetRect.right;
 };
 
-let iniSpeed = 10;
+let iniSpeed = 48;
 const boxs_count = 10;
-let resistance = 0.01;
-let init_loop_count = 0;
-let loop_before_slow_down = 600;
+let resistance = 0.08;
+let init_loop_count = 25;
+let loop_before_slow_down = 35;
 // When speed < low_resistance_speed, update the resistance to low_resistance
-let low_resistance_speed = 1;
-let low_resistance = 0.002;
+let low_resistance_speed = 1.5;
+let low_resistance = 0.007;
 
 let timer;
 let shift_x = [];
@@ -35,7 +39,17 @@ let box_width, initial_x;
 let loop_count = init_loop_count;
 let speed = iniSpeed;
 
+let prevSelectedIndex = boxs_count - 1;
 let items_temp = {};
+
+const defaultConfigs = {
+  iniSpeed,
+  resistance,
+  loop_before_slow_down,
+  low_resistance_speed,
+  low_resistance,
+  draw_list,
+};
 
 const resetData = () => {
   speed = iniSpeed;
@@ -43,6 +57,9 @@ const resetData = () => {
 };
 
 function Main() {
+  const [playSound_flip] = useSound(flipSfx, {
+    interrupt: true,
+  });
   const [isStart, setStart] = useState(false);
   const [selected, updateSelected] = useState([]);
   const [shiftX, updateShiftX] = useState(shift_x);
@@ -51,22 +68,37 @@ function Main() {
   const [settingForm, updateSettingForm] = useState();
   const [itemsPanel, showItemsPanel] = useState(false);
   const [isEnd, setIsEnd] = useState(false);
+  const [playSound_flip_thrott, set_playSound_flip_thrott] = useState({
+    callback: undefined,
+  });
 
   const centralLineRef = useRef(null);
+
+  const resetToDefaultConfigs = () => {
+    ({
+      iniSpeed,
+      resistance,
+      loop_before_slow_down,
+      low_resistance_speed,
+      low_resistance,
+    } = defaultConfigs);
+    const configs = { ...defaultConfigs, draw_list: draw_list || [] };
+    updateSettingForm(configs);
+    return configs;
+  };
+
+  useEffect(() => {
+    if (typeof playSound_flip === "function") {
+      set_playSound_flip_thrott({ callback: throttle(playSound_flip, 60) });
+    }
+  }, [playSound_flip]);
 
   useEffect(() => {
     // Read saved user configs
     try {
       let configs = localStorage.getItem("the_lucky_one_configs");
       if (!configs) {
-        updateSettingForm({
-          iniSpeed,
-          resistance,
-          low_resistance,
-          low_resistance_speed,
-          loop_before_slow_down,
-          draw_list,
-        });
+        resetToDefaultConfigs();
         return;
       }
       configs = JSON.parse(configs);
@@ -96,7 +128,7 @@ function Main() {
       setStart(true);
       setTimeout(() => {
         // Randomize the end position
-        loop_before_slow_down =
+        const loop_before_slow_down_ =
           loop_before_slow_down + Math.floor(Math.random() * 100);
 
         initial_x = randomBoxs.map(
@@ -105,7 +137,7 @@ function Main() {
         );
         box_width = document.querySelector(`#${prefix}box-0`).clientWidth;
         ////////////////////////////////////////////////////////////////
-        timer = setInterval(() => {
+        const loopFunc = () => {
           updateSelected(
             randomBoxs.map((_, index) => {
               return isOverlap(
@@ -131,19 +163,25 @@ function Main() {
 
           // Alter speed
           loop_count++;
-          if (loop_count < loop_before_slow_down) {
+          if (loop_count >= loop_before_slow_down_) {
+            if (speed < low_resistance_speed) {
+              speed -= low_resistance;
+            } else {
+              speed -= resistance;
+            }
+          }
+
+          if (speed <= 0) {
+            speed = 0;
+            // clearInterval(timer);
+            setIsEnd(true);
             return;
           }
-          if (speed < low_resistance_speed) {
-            speed -= low_resistance;
-          } else {
-            speed -= resistance;
-          }
-          if (speed <= 0) {
-            clearInterval(timer);
-            setIsEnd(true);
-          }
-        }, 5);
+
+          requestAnimationFrame(loopFunc);
+        };
+
+        requestAnimationFrame(loopFunc);
 
         ////////////////////////////////////////////////////////////////
       }, 500);
@@ -167,10 +205,14 @@ function Main() {
     });
   };
 
-  const saveConfigs = () => {
+  const saveConfigs = (configs) => {
     // Save user configs to localstorage
-    localStorage.setItem("the_lucky_one_configs", JSON.stringify(settingForm));
-    showSettingPanel(false);
+    console.log(settingForm);
+    localStorage.setItem(
+      "the_lucky_one_configs",
+      JSON.stringify(configs ? configs : settingForm)
+    );
+    closePanel();
     message.success("Saved");
     randomBoxs = generateBoxs(boxs_count);
   };
@@ -178,6 +220,17 @@ function Main() {
   const renderBoxs = useMemo(() => {
     return randomBoxs.map((item, index) => {
       const isSelected = selected[index] && !selected[index - 1];
+      if (isSelected) {
+        if (
+          index - prevSelectedIndex === 1 ||
+          index - prevSelectedIndex === -(boxs_count - 1)
+        ) {
+          if (typeof playSound_flip_thrott?.callback === "function") {
+            playSound_flip_thrott.callback();
+          }
+        }
+        prevSelectedIndex = index;
+      }
       return (
         <Box
           key={`${prefix}box-${index}`}
@@ -196,7 +249,7 @@ function Main() {
         />
       );
     });
-  }, [randomBoxs, shiftX, isEnd]);
+  }, [randomBoxs, shiftX, isEnd, playSound_flip_thrott]);
 
   const renderInputForm = useMemo(() => {
     if (!settingForm) return;
@@ -375,6 +428,11 @@ function Main() {
     );
   }, [settingForm]);
 
+  const closePanel = () => {
+    showSettingPanel(false);
+    showItemsPanel(false);
+  };
+
   return (
     <div className={`${prefix}container`}>
       <div className={debugMode ? `${prefix}debug-panel` : undefined}>
@@ -388,7 +446,7 @@ function Main() {
       </div>
       <SettingOutlined
         className={`${prefix}setting-icon`}
-        onClick={() => showSettingPanel(!settingPanel)}
+        onClick={() => showSettingPanel(true)}
       />
       <div
         className={classnames(
@@ -397,7 +455,7 @@ function Main() {
           itemsPanel && `${prefix}items-panel`
         )}
       >
-        {itemsPanel ? renderItemsPanel : renderInputForm}
+        {settingPanel && (itemsPanel ? renderItemsPanel : renderInputForm)}
         <Button
           type="primary"
           shape="round"
@@ -410,7 +468,20 @@ function Main() {
           type="primary"
           shape="round"
           size="middle"
-          onClick={itemsPanel ? saveConfigs : undefined}
+          onClick={() => {
+            const defaultConfigs = resetToDefaultConfigs();
+            saveConfigs(defaultConfigs);
+            message.info("Configs have been reset to default");
+            showSettingPanel(false);
+          }}
+        >
+          Reset User Configs
+        </Button>
+        <Button
+          type="primary"
+          shape="round"
+          size="middle"
+          onClick={settingPanel ? () => saveConfigs() : undefined}
         >
           Save
         </Button>
@@ -418,7 +489,7 @@ function Main() {
           type="secondary"
           shape="round"
           size="middle"
-          onClick={() => showSettingPanel(false)}
+          onClick={closePanel}
         >
           close
         </Button>
@@ -434,7 +505,7 @@ function Main() {
         <div
           ref={centralLineRef}
           className={`${prefix}central-line`}
-          style={{ opacity: isStart ? "1" : "0" }}
+          style={{ opacity: isStart && !isEnd ? "1" : "0" }}
         ></div>
         <ReloadOutlined
           className={`${prefix}reset-button`}
